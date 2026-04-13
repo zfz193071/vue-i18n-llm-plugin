@@ -9,25 +9,63 @@ class ReActAgent {
     this.keyMap = {};
   }
 
+  sanitizeLLMText(text) {
+    if (!text) return "";
+    return String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  }
+
+  parseJsonArray(text) {
+    const cleaned = this.sanitizeLLMText(text);
+    try {
+      const parsed = JSON.parse(cleaned);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      const match = cleaned.match(/\[[\s\S]*\]/);
+      if (!match) return [];
+      try {
+        const parsed = JSON.parse(match[0]);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+  }
+
+  extractChineseFallback(code) {
+    const all = code.match(/[\u4e00-\u9fa5]{2,}/g) || [];
+    return [...new Set(all)];
+  }
+
+  escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  /** 与技能一致：至少连续 2 个汉字才算待国际化文案 */
+  hasChineseToProcess(code) {
+    return /[\u4e00-\u9fa5]{2,}/.test(code);
+  }
+
+  /** 本地判断，不调用 LLM。避免 Ollama 失败时 llm 返回 "NO" 被误判为「无中文」而整段跳过。 */
+  thinkLocal(code) {
+    const need = this.hasChineseToProcess(code);
+    console.log("🤖 THINK(本地)：", need ? "YES" : "NO");
+    return { needAct: need };
+  }
+
+  fallbackKey(text, index) {
+    let h = 0;
+    for (let i = 0; i < text.length; i++) {
+      h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
+    }
+    const suffix = Math.abs(h).toString(36);
+    return `i18n_${suffix}_${index}`;
+  }
+
   // ======================
-  // 1. THINK（简化提示词！qwen7b能理解）
+  // 1. THINK（仅用本地规则；LLM 失败不得阻断流程）
   // ======================
   async think(code) {
-    const prompt = `
-你是Vue国际化工具。
-
-代码：
-${code.slice(0, 500)}
-
-请判断是否包含中文。
-只输出：
-YES 或 NO
-`;
-
-    const resp = ((await this.llm(prompt)) || "NO").toUpperCase();
-    console.log("🤖 THINK 结果：", resp);
-
-    return { needAct: resp === "YES" };
+    return this.thinkLocal(code);
   }
 
   // ======================
@@ -43,32 +81,40 @@ ${this.mcp.getSkill("extract_chinese")}
     const jsonStr = await this.llm(extractPrompt);
     console.log("提取中文：", jsonStr);
 
-    let list = [];
-    try {
-      list = JSON.parse(jsonStr);
-    } catch (e) {
-      console.error("提取失败");
-      return;
+    let list = this.parseJsonArray(jsonStr)
+      .map((item) => String(item || "").trim())
+      .filter((item) => /[\u4e00-\u9fa5]{2,}/.test(item));
+    if (list.length === 0) {
+      list = this.extractChineseFallback(code);
+      console.warn("LLM提取为空，已使用本地规则兜底提取：", list);
     }
 
     // -------- 步骤2：让LLM生成key --------
-    for (const text of list) {
-      const key = await this.llm(`
+    for (let i = 0; i < list.length; i++) {
+      const text = list[i];
+      const keyResp = await this.llm(`
 ${this.mcp.getSkill("generate_key")}
 输入：${text}
 只输出key。
 `);
+      let key = this.sanitizeLLMText(keyResp).replace(/['"`]/g, "").trim();
+      if (!key || !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(key)) {
+        key = this.fallbackKey(text, i);
+        console.warn("LLM 未返回合法 key，使用兜底：", text, "->", key);
+      }
       this.keyMap[text] = key;
 
       // -------- 步骤3：让LLM翻译 --------
-      const en = await this.llm(`
+      let en = this.sanitizeLLMText(await this.llm(`
 ${this.mcp.getSkill("translate")}
 输入：${text} 目标：英文
-`);
-      const hk = await this.llm(`
+`));
+      let hk = this.sanitizeLLMText(await this.llm(`
 ${this.mcp.getSkill("translate")}
 输入：${text} 目标：香港繁体
-`);
+`));
+      if (!en) en = text;
+      if (!hk) hk = text;
 
       // -------- 步骤4：写入文件 --------
       await this.writeToLocales(key, text, en, hk);
@@ -80,16 +126,15 @@ ${this.mcp.getSkill("translate")}
   // ======================
   async observe(code) {
     if (Object.keys(this.keyMap).length === 0) return code;
-
-    const finalCode = await this.llm(`
-${this.mcp.getSkill("replace_code")}
-原代码：
-${code}
-映射：${JSON.stringify(this.keyMap)}
-输出完整代码，不要解释。
-`);
-
-    return finalCode || code;
+    let finalCode = code;
+    const entries = Object.entries(this.keyMap).sort(
+      (a, b) => b[0].length - a[0].length,
+    );
+    for (const [zh, key] of entries) {
+      const matcher = new RegExp(this.escapeRegExp(zh), "g");
+      finalCode = finalCode.replace(matcher, `t('${key}')`);
+    }
+    return finalCode;
   }
 
   // ======================
@@ -99,11 +144,15 @@ ${code}
     const thought = await this.think(code);
     if (!thought.needAct) {
       console.log("🤖 无需处理");
-      return code;
+      return { code, replacedCount: 0 };
     }
 
     await this.act(code);
-    return await this.observe(code);
+    const newCode = await this.observe(code);
+    return {
+      code: newCode,
+      replacedCount: Object.keys(this.keyMap).length,
+    };
   }
 
   // ======================

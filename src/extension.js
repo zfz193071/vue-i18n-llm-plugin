@@ -11,6 +11,8 @@ async function execute() {
   }
 
   const code = editor.document.getText();
+  let replacedCount = 0;
+  let changed = false;
 
   await vscode.window.withProgress(
     {
@@ -22,7 +24,9 @@ async function execute() {
       await mcp.loadSkills();
 
       const agent = new ReActAgent(mcp);
-      const newCode = await agent.run(code);
+      const result = await agent.run(code);
+      const newCode = typeof result === "string" ? result : result?.code || code;
+      replacedCount = typeof result === "string" ? 0 : result?.replacedCount || 0;
 
       if (newCode && newCode !== code) {
         const edit = new vscode.WorkspaceEdit();
@@ -31,12 +35,20 @@ async function execute() {
           editor.document.positionAt(code.length),
         );
         edit.replace(editor.document.uri, range, newCode);
-        await vscode.workspace.applyEdit(edit);
+        changed = await vscode.workspace.applyEdit(edit);
       }
     },
   );
 
-  vscode.window.showInformationMessage("✅ 国际化处理完成！");
+  if (changed) {
+    vscode.window.showInformationMessage(
+      `✅ 国际化处理完成，已替换 ${replacedCount} 处中文。`,
+    );
+  } else {
+    vscode.window.showWarningMessage(
+      "未检测到可替换内容，或替换结果与原文件一致。",
+    );
+  }
 }
 
 function activate(context) {
