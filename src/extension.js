@@ -1,5 +1,5 @@
 const vscode = require("vscode");
-const { llm } = require("./utils/llm");
+const { llm, configureLlm } = require("./utils/llm");
 const MCP = require("./core/mcp");
 const ReActAgent = require("./core/agent");
 
@@ -20,6 +20,19 @@ async function execute() {
       title: "ReAct LLM处理中...",
     },
     async () => {
+      const c = vscode.workspace.getConfiguration("vueI18nLlm");
+      const apiKey =
+        String(c.get("apiKey") || "").trim() ||
+        process.env.VUE_I18N_LLM_API_KEY ||
+        "";
+      const baseUrl = String(c.get("baseUrl") || "").trim();
+      const model = String(c.get("model") || "").trim();
+      configureLlm({
+        apiKey,
+        ...(baseUrl ? { baseUrl } : {}),
+        ...(model ? { model } : {}),
+      });
+
       const mcp = new MCP(llm);
       await mcp.loadSkills();
 

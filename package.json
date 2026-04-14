@@ -24,9 +24,30 @@
           "when": "resourceExtname == .vue"
         }
       ]
+    },
+    "configuration": {
+      "title": "Vue i18n LLM",
+      "properties": {
+        "vueI18nLlm.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI 兼容 Chat Completions 的 API Key。也可设置环境变量 VUE_I18N_LLM_API_KEY。"
+        },
+        "vueI18nLlm.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "可选。覆盖默认网关地址；留空则使用内置默认或环境变量 VUE_I18N_LLM_BASE_URL。"
+        },
+        "vueI18nLlm.model": {
+          "type": "string",
+          "default": "",
+          "description": "可选。覆盖模型名；留空则使用内置默认或环境变量 VUE_I18N_LLM_MODEL。"
+        }
+      }
     }
   },
   "dependencies": {
+    "dotenv": "^16.4.7",
     "axios": "^1.13.6",
     "fs-extra": "^11.3.4",
     "lodash": "^4.17.23"
