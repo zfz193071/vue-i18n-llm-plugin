@@ -14,44 +14,51 @@ async function execute() {
   let replacedCount = 0;
   let changed = false;
 
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: "ReAct LLM处理中...",
-    },
-    async () => {
-      const c = vscode.workspace.getConfiguration("vueI18nLlm");
-      const apiKey =
-        String(c.get("apiKey") || "").trim() ||
-        process.env.VUE_I18N_LLM_API_KEY ||
-        "";
-      const baseUrl = String(c.get("baseUrl") || "").trim();
-      const model = String(c.get("model") || "").trim();
-      configureLlm({
-        apiKey,
-        ...(baseUrl ? { baseUrl } : {}),
-        ...(model ? { model } : {}),
-      });
+  try {
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "ReAct LLM处理中...",
+      },
+      async () => {
+        const c = vscode.workspace.getConfiguration("vueI18nLlm");
+        const apiKey =
+          String(c.get("apiKey") || "").trim() ||
+          process.env.VUE_I18N_LLM_API_KEY ||
+          "";
+        const baseUrl = String(c.get("baseUrl") || "").trim();
+        const model = String(c.get("model") || "").trim();
+        configureLlm({
+          apiKey,
+          ...(baseUrl ? { baseUrl } : {}),
+          ...(model ? { model } : {}),
+        });
 
-      const mcp = new MCP(llm);
-      await mcp.loadSkills();
+        const mcp = new MCP(llm);
+        await mcp.loadSkills();
 
-      const agent = new ReActAgent(mcp);
-      const result = await agent.run(code);
-      const newCode = typeof result === "string" ? result : result?.code || code;
-      replacedCount = typeof result === "string" ? 0 : result?.replacedCount || 0;
+        const agent = new ReActAgent(mcp);
+        const result = await agent.run(code);
+        const newCode = typeof result === "string" ? result : result?.code || code;
+        replacedCount = typeof result === "string" ? 0 : result?.replacedCount || 0;
 
-      if (newCode && newCode !== code) {
-        const edit = new vscode.WorkspaceEdit();
-        const range = new vscode.Range(
-          editor.document.positionAt(0),
-          editor.document.positionAt(code.length),
-        );
-        edit.replace(editor.document.uri, range, newCode);
-        changed = await vscode.workspace.applyEdit(edit);
-      }
-    },
-  );
+        if (newCode && newCode !== code) {
+          const edit = new vscode.WorkspaceEdit();
+          const range = new vscode.Range(
+            editor.document.positionAt(0),
+            editor.document.positionAt(code.length),
+          );
+          edit.replace(editor.document.uri, range, newCode);
+          changed = await vscode.workspace.applyEdit(edit);
+        }
+      },
+    );
+  } catch (error) {
+    const msg = error?.message || String(error);
+    console.error("translateAll执行失败:", error);
+    vscode.window.showErrorMessage(`执行失败：${msg}`);
+    return;
+  }
 
   if (changed) {
     vscode.window.showInformationMessage(

@@ -14,6 +14,11 @@ class ReActAgent {
     return String(text).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   }
 
+  isInvalidLLMOutput(text) {
+    const cleaned = this.sanitizeLLMText(text).toUpperCase();
+    return !cleaned || cleaned === "NO" || cleaned === "N/A" || cleaned === "NULL";
+  }
+
   extractValidKey(text) {
     const cleaned = this.sanitizeLLMText(text).replace(/['"`]/g, " ");
     const m = cleaned.match(/[a-zA-Z][a-zA-Z0-9_]*/);
@@ -85,7 +90,11 @@ ${templateCode}
 <RESULT>...完整template代码...</RESULT>
 `;
     const resp = await this.llm(prompt);
-    return this.extractTaggedResult(resp) || templateCode;
+    if (this.isInvalidLLMOutput(resp)) return templateCode;
+    const transformed = this.extractTaggedResult(resp);
+    if (this.isInvalidLLMOutput(transformed)) return templateCode;
+    if (!/<template\b[^>]*>[\s\S]*?<\/template>/i.test(transformed)) return templateCode;
+    return transformed;
   }
 
   async llmTransformScript(scriptCode) {
@@ -109,7 +118,11 @@ ${scriptCode}
 <RESULT>...完整script代码...</RESULT>
 `;
     const resp = await this.llm(prompt);
-    return this.extractTaggedResult(resp) || scriptCode;
+    if (this.isInvalidLLMOutput(resp)) return scriptCode;
+    const transformed = this.extractTaggedResult(resp);
+    if (this.isInvalidLLMOutput(transformed)) return scriptCode;
+    if (!/<script\b[^>]*>[\s\S]*?<\/script>/i.test(transformed)) return scriptCode;
+    return transformed;
   }
 
   extractChineseFallback(code) {
@@ -273,7 +286,39 @@ ${JSON.stringify(list)}
       let idx = 0;
       finalCode = finalCode.replace(scriptRegex, () => newScripts[idx++] || "");
     }
+    // LLM 漏翻/异常时的本地兜底，保证 template/script 中文可被替换
+    finalCode = this.applyDeterministicFallback(finalCode);
     return finalCode;
+  }
+
+  applyDeterministicFallback(code) {
+    let out = code;
+    const { template, scripts, templateRegex, scriptRegex } = this.extractVueSections(out);
+    if (template) {
+      let nextTemplate = template;
+      for (const [zh, key] of Object.entries(this.keyMap)) {
+        nextTemplate = this.replaceTemplateAttr(nextTemplate, zh, key);
+        nextTemplate = this.replaceTemplateText(nextTemplate, zh, key);
+      }
+      out = out.replace(templateRegex, nextTemplate);
+    }
+    if (scripts.length > 0) {
+      const nextScripts = scripts.map((scriptCode) => {
+        let nextScript = scriptCode;
+        let changed = false;
+        for (const [zh, key] of Object.entries(this.keyMap)) {
+          const replaced = this.replaceScriptString(nextScript, zh, key);
+          if (replaced !== nextScript) {
+            changed = true;
+            nextScript = replaced;
+          }
+        }
+        return this.ensureUseI18nInScriptSetup(nextScript, changed);
+      });
+      let idx = 0;
+      out = out.replace(scriptRegex, () => nextScripts[idx++] || "");
+    }
+    return out;
   }
 
   // ======================
